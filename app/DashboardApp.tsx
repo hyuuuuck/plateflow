@@ -201,7 +201,7 @@ const customers = [
   ["유신전자", "김혜진", "월 2회 마감", 54, 68800000],
 ] as const;
 
-const monthlySales = [58, 64, 61, 72, 78, 91, 86];
+const monthlySales = [52, 59, 62, 68, 72, 83, 86];
 
 function won(value: number) {
   return `${new Intl.NumberFormat("ko-KR").format(value)}원`;
@@ -572,13 +572,110 @@ function Statements({ items, selected, onSelect, onIssue }: { items: typeof seed
 }
 
 function Sales() {
-  const max = Math.max(...monthlySales);
+  const yearlyTarget = 91;
+  const cumulativeSales = monthlySales.reduce((sum, amount) => sum + amount, 0);
+  const customerTotal = customers.reduce((sum, customer) => sum + customer[4], 0);
+  const topCustomerShare = (customerTotal / (cumulativeSales * 1000000)) * 100;
+  const summaries = [
+    {
+      index: "01",
+      label: "2026년 누적 매출",
+      value: "4.82억원",
+      change: "+12.4%",
+      context: "전년 동기",
+    },
+    {
+      index: "02",
+      label: "7월 확정 매출",
+      value: "8,600만원",
+      change: "94.5%",
+      context: "월 목표 달성률",
+    },
+    {
+      index: "03",
+      label: "평균 거래단가",
+      value: "2,840원",
+      change: "+3.1%",
+      context: "전월 대비",
+    },
+  ];
+
   return (
     <>
-      <div className="metrics three">{[["2026년 누적 매출", "4.82억원", "전년 동기 대비 12.4% ↑"], ["7월 매출", "8,620만원", "목표 대비 94%"], ["평균 거래단가", "2,840원", "전월 대비 3.1% ↑"]].map((item) => <div className="metric static" key={item[0]}><small>{item[0]}</small><strong>{item[1]}</strong><i>{item[2]}</i></div>)}</div>
+      <div className="sales-kpis">
+        {summaries.map((item) => (
+          <article key={item.index}>
+            <header><span>{item.index}</span><small>{item.label}</small></header>
+            <strong>{item.value}</strong>
+            <footer><b>{item.change}</b><span>{item.context}</span></footer>
+          </article>
+        ))}
+      </div>
       <div className="sales-grid">
-        <section className="panel chart"><SectionHead title="월별 매출" description="확정 납품 공급가액 기준 · 단위 백만원" /><div className="bars">{monthlySales.map((amount, index) => <div key={index}><span>{amount}</span><i style={{ height: `${Math.round((amount / max) * 190)}px` }} /><small>{index + 1}월</small></div>)}</div></section>
-        <section className="panel"><SectionHead title="고객사별 매출" description="2026년 누적 기준" /><ol className="ranking">{customers.map((item, index) => <li key={item[0]}><span>{index + 1}</span><div><strong>{item[0]}</strong><i style={{ width: `${Math.round((item[4] / customers[0][4]) * 100)}%` }} /></div><b>{Math.round(item[4] / 1000000)}백만</b></li>)}</ol></section>
+        <section className="panel sales-panel">
+          <SectionHead
+            title="월별 매출 추이"
+            description="확정 납품 공급가액 · 단위 백만원"
+            action={<button className="report-period">2026년 1–7월 <span>⌄</span></button>}
+          />
+          <div className="sales-chart">
+            <div className="chart-scale" aria-hidden="true">
+              <span>100</span><span>75</span><span>50</span><span>25</span><span>0</span>
+            </div>
+            <div className="chart-plot">
+              <div className="target-line" style={{ bottom: `${yearlyTarget}%` }}>
+                <span>월 목표 91</span>
+              </div>
+              {monthlySales.map((amount, index) => (
+                <div className="bar-column" key={index}>
+                  <div className="bar-track">
+                    <i
+                      className={index === monthlySales.length - 1 ? "current" : ""}
+                      style={{ height: `${amount}%` }}
+                    >
+                      <b>{amount}</b>
+                    </i>
+                  </div>
+                  <small>{String(index + 1).padStart(2, "0")}</small>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="chart-summary">
+            <div><small>누적</small><strong>{cumulativeSales}백만원</strong></div>
+            <div><small>월평균</small><strong>{(cumulativeSales / monthlySales.length).toFixed(1)}백만원</strong></div>
+            <p><span>07월</span> 전월보다 <b>3.6%</b> 증가했으며 월 목표의 <b>94.5%</b>를 달성했습니다.</p>
+          </div>
+        </section>
+        <section className="panel sales-panel customer-sales">
+          <SectionHead
+            title="고객사별 매출"
+            description="2026년 누적 · 전체 매출 대비 비중"
+            action={<span className="report-code">TOP 04</span>}
+          />
+          <ol className="report-ranking">
+            {customers.map((item, index) => {
+              const share = (item[4] / (cumulativeSales * 1000000)) * 100;
+              return (
+                <li key={item[0]}>
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <div>
+                    <header><strong>{item[0]}</strong><em>{share.toFixed(1)}%</em></header>
+                    <div className="rank-track">
+                      <i style={{ width: `${Math.round((item[4] / customers[0][4]) * 100)}%` }} />
+                    </div>
+                    <small>누적 공급가액</small>
+                  </div>
+                  <b>{(item[4] / 1000000).toFixed(1)}M</b>
+                </li>
+              );
+            })}
+          </ol>
+          <footer className="ranking-summary">
+            <span>상위 4개 고객사 비중</span>
+            <strong>{topCustomerShare.toFixed(1)}%</strong>
+          </footer>
+        </section>
       </div>
     </>
   );
