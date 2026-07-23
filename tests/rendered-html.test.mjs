@@ -52,7 +52,8 @@ test("ships the Excel statement import and sales aggregation workflow", async ()
   ]);
 
   assert.match(dashboard, /Excel 가져오기/);
-  assert.match(dashboard, /열 매핑/);
+  assert.match(dashboard, /필수 열 연결/);
+  assert.match(dashboard, /선택 항목/);
   assert.match(dashboard, /검증 완료 · 일괄 등록/);
   assert.match(dashboard, /read-excel-file\/browser/);
   assert.match(importRoute, /getFiles\(\)\.put/);

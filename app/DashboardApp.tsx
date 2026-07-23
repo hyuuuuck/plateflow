@@ -822,6 +822,20 @@ const excelFieldDefinitions: Array<{
   { key: "note", label: "비고", aliases: ["비고", "메모", "특이사항", "note", "remark"] },
 ];
 
+const primaryExcelFieldKeys: ExcelMappingKey[] = [
+  "transactionDate",
+  "itemName",
+  "quantity",
+  "unitPrice",
+  "supplyAmount",
+];
+const primaryExcelFields = excelFieldDefinitions.filter((field) =>
+  primaryExcelFieldKeys.includes(field.key),
+);
+const optionalExcelFields = excelFieldDefinitions.filter(
+  (field) => !primaryExcelFieldKeys.includes(field.key),
+);
+
 const emptyExcelMapping: ExcelMapping = {
   transactionDate: "",
   customer: "",
@@ -1051,20 +1065,15 @@ function ExcelImportModal({ savedMappings, onClose, onImported }: { savedMapping
     <div className="modal-backdrop excel-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="excel-modal" role="dialog" aria-modal="true" aria-labelledby="excel-import-title">
         <header className="excel-modal-head">
-          <div><small>MICROSOFT EXCEL IMPORT</small><h2 id="excel-import-title">거래명세서 가져오기</h2><p>열을 확인한 뒤 유효한 거래 행만 일괄 등록합니다.</p></div>
+          <div><h2 id="excel-import-title">Excel 거래내역 가져오기</h2><p>.xlsx 파일의 열을 확인하고 유효한 행만 등록합니다.</p></div>
           <button className="icon-button" onClick={onClose} aria-label="닫기">×</button>
         </header>
 
         <div className="excel-import-content">
-          <aside className="excel-steps">
-            {[["01", "파일 선택", Boolean(file)], ["02", "열 매핑", requiredMapped], ["03", "검증·등록", Boolean(parsed.validRows.length && !parsed.errors.length)]].map(([number, label, done]) => <div className={done ? "done" : ""} key={String(number)}><span>{done ? "✓" : number}</span><strong>{label}</strong></div>)}
-            <p>.xlsx · 최대 20MB<br />한 번에 최대 5,000행</p>
-          </aside>
-
           <div className="excel-workspace">
             <section className="excel-file-card">
               <input ref={fileRef} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => void chooseFile(event.target.files?.[0] ?? null)} hidden />
-              {file ? <><span>XL</span><div><strong>{file.name}</strong><small>{(file.size / 1024).toFixed(1)}KB · {sheets.length}개 시트</small></div><button className="secondary compact" onClick={() => fileRef.current?.click()}>파일 변경</button></> : <button className="excel-drop" onClick={() => fileRef.current?.click()} disabled={reading}><span>XL</span><strong>{reading ? "Excel 분석 중…" : "Excel 파일 선택"}</strong><small>고객사에서 받은 원본 .xlsx 파일</small></button>}
+              {file ? <><div><strong>{file.name}</strong><small>{(file.size / 1024).toFixed(1)}KB · {sheets.length}개 시트</small></div><button className="secondary compact" onClick={() => fileRef.current?.click()}>변경</button></> : <button className="excel-drop" onClick={() => fileRef.current?.click()} disabled={reading}><strong>{reading ? "파일 확인 중…" : "Excel 파일 선택"}</strong><small>.xlsx · 최대 20MB · 5,000행</small></button>}
             </section>
 
             {sheet && (
@@ -1076,8 +1085,12 @@ function ExcelImportModal({ savedMappings, onClose, onImported }: { savedMapping
                 </section>
 
                 <section className="mapping-section">
-                  <header><div><h3>열 매핑</h3><p>필수 항목은 거래일, 품명, 수량과 단가 또는 공급가액입니다.</p></div><span>{Object.values(mapping).filter(Boolean).length}/{excelFieldDefinitions.length} 연결</span></header>
-                  <div className="mapping-grid">{excelFieldDefinitions.map((field) => <label key={field.key}><span>{field.label}{field.required ? <b>*</b> : ""}</span><select value={mapping[field.key]} onChange={(event) => setMapping((current) => ({ ...current, [field.key]: event.target.value }))}><option value="">연결 안 함</option>{headers.map((header) => <option key={header}>{header}</option>)}</select></label>)}</div>
+                  <header><div><h3>필수 열 연결</h3><p>거래일·품명·수량과 단가 또는 공급가액을 확인하세요.</p></div><span>{Object.values(mapping).filter(Boolean).length}개 연결</span></header>
+                  <div className="mapping-grid">{primaryExcelFields.map((field) => <label key={field.key}><span>{field.label}{field.required ? <b>*</b> : ""}</span><select value={mapping[field.key]} onChange={(event) => setMapping((current) => ({ ...current, [field.key]: event.target.value }))}><option value="">연결 안 함</option>{headers.map((header) => <option key={header}>{header}</option>)}</select></label>)}</div>
+                  <details className="optional-mapping">
+                    <summary><span>선택 항목</span><small>고객사 · 품목코드 · 부가세 · 비고</small></summary>
+                    <div className="mapping-grid">{optionalExcelFields.map((field) => <label key={field.key}><span>{field.label}</span><select value={mapping[field.key]} onChange={(event) => setMapping((current) => ({ ...current, [field.key]: event.target.value }))}><option value="">연결 안 함</option>{headers.map((header) => <option key={header}>{header}</option>)}</select></label>)}</div>
+                  </details>
                 </section>
 
                 <section className="excel-validation">
