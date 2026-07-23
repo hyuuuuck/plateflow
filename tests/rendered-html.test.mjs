@@ -31,7 +31,7 @@ test("ships the drawing and pricing workflows with social metadata", async () =>
   ]);
 
   assert.match(dashboard, /function DashboardApp/);
-  assert.match(dashboard, /새 도면 등록/);
+  assert.match(dashboard, /＋ 도면 등록/);
   assert.match(dashboard, /단가 승인/);
   assert.match(dashboard, /발급 처리/);
   assert.match(dashboard, /처리 완료/);
@@ -55,6 +55,8 @@ test("ships the Excel statement import and sales aggregation workflow", async ()
   assert.match(dashboard, /필수 열 연결/);
   assert.match(dashboard, /선택 항목/);
   assert.match(dashboard, /검증 완료 · 일괄 등록/);
+  assert.match(dashboard, /거래명세서 미리보기/);
+  assert.match(dashboard, /niceChartCeiling/);
   assert.match(dashboard, /read-excel-file\/browser/);
   assert.match(importRoute, /getFiles\(\)\.put/);
   assert.match(importRoute, /INSERT OR IGNORE INTO sales_transactions/);

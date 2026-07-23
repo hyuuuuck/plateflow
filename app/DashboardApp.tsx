@@ -377,6 +377,7 @@ export default function DashboardApp() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("전체");
   const [modal, setModal] = useState(false);
+  const [statementImportRequest, setStatementImportRequest] = useState(0);
   const [toast, setToast] = useState("");
   const [operationalSettings, setOperationalSettings] = useState<SettingsState>(defaultSettings);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -477,6 +478,11 @@ export default function DashboardApp() {
   }
 
   const info = pageInfo[page];
+  const contextAction = !currentDrawing && (page === "dashboard" || page === "drawings")
+    ? <button className="primary small" type="button" onClick={() => setModal(true)}>＋ 도면 등록</button>
+    : !currentDrawing && page === "statements"
+      ? <button className="primary small" type="button" onClick={() => setStatementImportRequest((value) => value + 1)}>↑ Excel 가져오기</button>
+      : null;
 
   return (
     <div className="app-shell">
@@ -519,7 +525,7 @@ export default function DashboardApp() {
               <kbd>⌘ K</kbd>
             </label>
             <button className="icon-button" type="button" aria-label="알림" onClick={() => announce("새로운 알림이 없습니다.")}>♧</button>
-            <button className="primary small" type="button" onClick={() => setModal(true)}>＋ 도면 등록</button>
+            {contextAction}
           </div>
         </header>
 
@@ -539,14 +545,13 @@ export default function DashboardApp() {
                   <h1>{info.title}</h1>
                   <p>{info.description}</p>
                 </div>
-                {page === "drawings" && <button className="primary" onClick={() => setModal(true)}>＋ 새 도면 등록</button>}
               </div>
 
               {page === "dashboard" && <Dashboard drawings={drawings} alerts={operationalSettings.alerts} onNavigate={navigate} onOpen={setSelectedDrawing} />}
               {page === "drawings" && <DrawingList drawings={filteredDrawings} filter={filter} onFilter={setFilter} onOpen={setSelectedDrawing} />}
               {page === "pricing" && <Pricing drawings={drawings} selected={priceDrawing} approvalConfig={operationalSettings.pricingApproval} onSelect={setSelectedPrice} onApprove={approve} />}
               {page === "orders" && <Orders />}
-              {page === "statements" && <Statements items={statements} selected={statement} config={operationalSettings.statement} onSelect={setSelectedStatement} onIssue={issueStatement} onAnnounce={announce} />}
+              {page === "statements" && <Statements items={statements} selected={statement} config={operationalSettings.statement} importRequest={statementImportRequest} onSelect={setSelectedStatement} onIssue={issueStatement} onAnnounce={announce} />}
               {page === "sales" && <Sales />}
               {page === "cs" && <CS items={tickets} onComplete={(id) => { setTickets((items) => items.map((item) => item.id === id ? { ...item, status: "처리 완료" } : item)); announce("CS 항목을 처리 완료했습니다."); }} />}
               {page === "customers" && <Customers />}
@@ -717,9 +722,18 @@ function Orders() {
   );
 }
 
-function Statements({ items, selected, config, onSelect, onIssue, onAnnounce }: { items: typeof seedStatements; selected: (typeof seedStatements)[number]; config: SettingsState["statement"]; onSelect: (id: string) => void; onIssue: (id: string) => void; onAnnounce: (message: string) => void }) {
+function Statements({ items, selected, config, importRequest, onSelect, onIssue, onAnnounce }: {
+  items: typeof seedStatements;
+  selected: (typeof seedStatements)[number];
+  config: SettingsState["statement"];
+  importRequest: number;
+  onSelect: (id: string) => void;
+  onIssue: (id: string) => void;
+  onAnnounce: (message: string) => void;
+}) {
   const [mode, setMode] = useState<"statements" | "imports">("statements");
   const [showImport, setShowImport] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
   const [analytics, setAnalytics] = useState<StatementImportAnalytics | null>(null);
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
 
@@ -740,6 +754,12 @@ function Statements({ items, selected, config, onSelect, onIssue, onAnnounce }: 
     return () => window.clearTimeout(timeout);
   }, []);
 
+  useEffect(() => {
+    if (importRequest <= 0) return;
+    const timeout = window.setTimeout(() => setShowImport(true), 0);
+    return () => window.clearTimeout(timeout);
+  }, [importRequest]);
+
   const selectedBatch = analytics?.batches.find((batch) => batch.id === selectedBatchId) ?? analytics?.batches[0];
 
   return (
@@ -758,7 +778,6 @@ function Statements({ items, selected, config, onSelect, onIssue, onAnnounce }: 
               <button className={mode === "statements" ? "active" : ""} onClick={() => setMode("statements")}>거래명세서</button>
               <button className={mode === "imports" ? "active" : ""} onClick={() => setMode("imports")}>Excel 등록 이력 {analytics?.batches.length || ""}</button>
             </div>
-            <button className="primary compact" onClick={() => setShowImport(true)}>↑ Excel 가져오기</button>
           </div>
           {mode === "statements" ? (
             <table><thead><tr><th>명세서 번호</th><th>고객사</th><th>대상</th><th className="number">공급가액</th><th>상태</th></tr></thead><tbody>{items.map((item) => <tr className={`clickable ${item.id === selected.id ? "selected" : ""}`} onClick={() => onSelect(item.id)} key={item.id}><td><button className="link-button">{item.id}</button></td><td>{item.customer}</td><td>{item.target}</td><td className="number">{won(item.amount)}</td><td><Status>{item.status}</Status></td></tr>)}</tbody></table>
@@ -769,10 +788,8 @@ function Statements({ items, selected, config, onSelect, onIssue, onAnnounce }: 
           )}
         </section>
         {mode === "statements" ? (
-          <aside className="statement-preview"><div className="preview-tools"><span>미리보기</span><button>PDF 다운로드</button></div>
-            <div className="paper"><div className="paper-title"><span>거 래 명 세 서</span><small>{selected.id}</small></div><div className="parties"><div><small>공급받는 자</small><strong>{selected.customer}</strong><span>{selected.target}</span></div><div><small>공급자</small><strong>{config.supplierName}</strong><span>사업자등록번호 {config.businessNumber}</span></div></div>
-              <table><thead><tr><th>품명</th><th>수량</th><th>단가</th><th>공급가액</th></tr></thead><tbody><tr><td>브라켓 A</td><td>1,000</td><td>1,850</td><td>1,850,000</td></tr><tr><td>고정 브라켓</td><td>500</td><td>2,180</td><td>1,090,000</td></tr><tr><td>센서 플레이트</td><td>400</td><td>3,600</td><td>1,440,000</td></tr></tbody></table>
-              <div className="paper-total"><span>공급가액 합계</span><strong>{won(selected.amount)}</strong></div></div>
+          <aside className="statement-preview"><div className="preview-tools"><span>미리보기</span><div><button onClick={() => setShowPreview(true)}>크게 보기</button><button>PDF 다운로드</button></div></div>
+            <StatementPaper selected={selected} config={config} />
             <button className="primary full" disabled={selected.status === "발급 완료"} onClick={() => onIssue(selected.id)}>{selected.status === "발급 완료" ? `${selected.issuedAt} 발급 완료` : "거래명세서 발급"}</button>
           </aside>
         ) : (
@@ -801,7 +818,34 @@ function Statements({ items, selected, config, onSelect, onIssue, onAnnounce }: 
           }}
         />
       )}
+      {showPreview && (
+        <div className="modal-backdrop statement-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setShowPreview(false)}>
+          <section className="statement-modal" role="dialog" aria-modal="true" aria-labelledby="statement-preview-title">
+            <header><div><small>DOCUMENT PREVIEW</small><h2 id="statement-preview-title">거래명세서 미리보기</h2></div><button className="icon-button" onClick={() => setShowPreview(false)} aria-label="닫기">×</button></header>
+            <div className="statement-modal-canvas"><StatementPaper selected={selected} config={config} large /></div>
+            <footer><button className="secondary" onClick={() => setShowPreview(false)}>닫기</button><button className="primary">PDF 다운로드</button></footer>
+          </section>
+        </div>
+      )}
     </>
+  );
+}
+
+function StatementPaper({ selected, config, large = false }: {
+  selected: (typeof seedStatements)[number];
+  config: SettingsState["statement"];
+  large?: boolean;
+}) {
+  return (
+    <div className={`paper${large ? " paper-large" : ""}`}>
+      <div className="paper-title"><span>거 래 명 세 서</span><small>{selected.id}</small></div>
+      <div className="parties">
+        <div><small>공급받는 자</small><strong>{selected.customer}</strong><span>{selected.target}</span></div>
+        <div><small>공급자</small><strong>{config.supplierName}</strong><span>사업자등록번호 {config.businessNumber}</span></div>
+      </div>
+      <table><thead><tr><th>품명</th><th>수량</th><th>단가</th><th>공급가액</th></tr></thead><tbody><tr><td>브라켓 A</td><td>1,000</td><td>1,850</td><td>1,850,000</td></tr><tr><td>고정 브라켓</td><td>500</td><td>2,180</td><td>1,090,000</td></tr><tr><td>센서 플레이트</td><td>400</td><td>3,600</td><td>1,440,000</td></tr></tbody></table>
+      <div className="paper-total"><span>공급가액 합계</span><strong>{won(selected.amount)}</strong></div>
+    </div>
   );
 }
 
@@ -1141,7 +1185,25 @@ function Sales() {
   const currentMonthSales = salesSeries[currentMonthIndex] || 0;
   const previousMonthSales = salesSeries[Math.max(0, currentMonthIndex - 1)] || 0;
   const monthChange = previousMonthSales ? ((currentMonthSales - previousMonthSales) / previousMonthSales) * 100 : 0;
-  const scaleMax = Math.max(100, Math.ceil(Math.max(...salesSeries, yearlyTarget) / 25) * 25);
+  const chartDataPeak = Math.max(...salesSeries, .01);
+  const chartScaleBase = hasExcelData && chartDataPeak < yearlyTarget * .25
+    ? chartDataPeak
+    : Math.max(chartDataPeak, yearlyTarget);
+  const niceChartCeiling = (value: number) => {
+    const padded = value * 1.12;
+    const magnitude = 10 ** Math.floor(Math.log10(padded));
+    const normalized = padded / magnitude;
+    const step = normalized <= 1 ? 1 : normalized <= 1.5 ? 1.5 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10;
+    return step * magnitude;
+  };
+  const scaleMax = niceChartCeiling(chartScaleBase);
+  const targetVisible = yearlyTarget <= scaleMax;
+  const chartValue = (value: number) => value >= 10
+    ? Math.round(value).toLocaleString()
+    : value >= 1
+      ? value.toFixed(1)
+      : value.toFixed(2);
+  const activeMonthCount = Math.max(1, salesSeries.filter((amount) => amount > 0).length);
   const customerSeries = hasExcelData
     ? (excelAnalytics?.customers ?? []).slice(0, 4).map((item) => ({ name: item.customer, amount: item.amount }))
     : customers.map((item) => ({ name: item[0], amount: item[4] }));
@@ -1168,7 +1230,7 @@ function Sales() {
     },
     {
       index: "03",
-      label: "평균 거래단가",
+      label: "평균 거래금액",
       value: hasExcelData && excelAnalytics?.summary.count
         ? won(Math.round(totalWon / excelAnalytics.summary.count))
         : "2,840원",
@@ -1192,17 +1254,17 @@ function Sales() {
         <section className="panel sales-panel">
           <SectionHead
             title="월별 매출 추이"
-            description={hasExcelData ? "Excel 등록 공급가액 · 단위 백만원" : "확정 납품 공급가액 · 단위 백만원"}
+            description={hasExcelData && !targetVisible ? `Excel 등록 공급가액 · 단위 백만원 · 월 목표 ${yearlyTarget}백만원` : hasExcelData ? "Excel 등록 공급가액 · 단위 백만원" : "확정 납품 공급가액 · 단위 백만원"}
             action={<button className="report-period">{excelAnalytics?.year ?? "2026"}년 1–{monthCount}월 <span>⌄</span></button>}
           />
           <div className="sales-chart">
             <div className="chart-scale" aria-hidden="true">
-              <span>{scaleMax}</span><span>{Math.round(scaleMax * .75)}</span><span>{Math.round(scaleMax * .5)}</span><span>{Math.round(scaleMax * .25)}</span><span>0</span>
+              <span>{chartValue(scaleMax)}</span><span>{chartValue(scaleMax * .75)}</span><span>{chartValue(scaleMax * .5)}</span><span>{chartValue(scaleMax * .25)}</span><span>0</span>
             </div>
             <div className="chart-plot" style={{ gridTemplateColumns: `repeat(${salesSeries.length}, minmax(34px, 1fr))` }}>
-              <div className="target-line" style={{ bottom: `${(yearlyTarget / scaleMax) * 100}%` }}>
+              {targetVisible && <div className="target-line" style={{ bottom: `${(yearlyTarget / scaleMax) * 100}%` }}>
                 <span>월 목표 91</span>
-              </div>
+              </div>}
               {salesSeries.map((amount, index) => (
                 <div className="bar-column" key={index}>
                   <div className="bar-track">
@@ -1210,7 +1272,7 @@ function Sales() {
                       className={index === currentMonthIndex ? "current" : ""}
                       style={{ height: `${Math.max(2, (amount / scaleMax) * 100)}%` }}
                     >
-                      <b>{amount ? Math.round(amount) : "-"}</b>
+                      <b>{amount ? chartValue(amount) : "-"}</b>
                     </i>
                   </div>
                   <small>{String(index + 1).padStart(2, "0")}</small>
@@ -1220,7 +1282,7 @@ function Sales() {
           </div>
           <div className="chart-summary">
             <div><small>누적</small><strong>{cumulativeSales.toFixed(1)}백만원</strong></div>
-            <div><small>월평균</small><strong>{(cumulativeSales / salesSeries.length).toFixed(1)}백만원</strong></div>
+            <div><small>월평균</small><strong>{(cumulativeSales / activeMonthCount).toFixed(1)}백만원</strong></div>
             <p><span>{String(currentMonthIndex + 1).padStart(2, "0")}월</span> 전월보다 <b>{Math.abs(monthChange).toFixed(1)}%</b> {monthChange >= 0 ? "증가" : "감소"}했으며 월 목표의 <b>{((currentMonthSales / yearlyTarget) * 100).toFixed(1)}%</b>를 달성했습니다.</p>
           </div>
         </section>
