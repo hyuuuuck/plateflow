@@ -288,6 +288,19 @@ function won(value: number) {
   return `${new Intl.NumberFormat("ko-KR").format(value)}원`;
 }
 
+function nextDrawingNumber(config: SettingsState["drawingNumber"], sequence: number) {
+  const now = new Date();
+  const year = String(now.getFullYear()).slice(-2);
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const paddedSequence = String(sequence).padStart(config.sequenceDigits, "0");
+  return config.format
+    .replaceAll("{PREFIX}", config.prefix)
+    .replaceAll("{YYMM}", `${year}${month}`)
+    .replaceAll("{YY}", year)
+    .replaceAll("{MM}", month)
+    .replaceAll("{SEQ}", paddedSequence);
+}
+
 function Status({ children }: { children: string }) {
   const tone =
     /완료/.test(children)
@@ -314,6 +327,7 @@ export default function DashboardApp() {
   const [filter, setFilter] = useState("전체");
   const [modal, setModal] = useState(false);
   const [toast, setToast] = useState("");
+  const [operationalSettings, setOperationalSettings] = useState<SettingsState>(defaultSettings);
   const searchRef = useRef<HTMLInputElement>(null);
 
   const currentDrawing = drawings.find((item) => item.id === selectedDrawing);
@@ -340,6 +354,21 @@ export default function DashboardApp() {
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
+  }, []);
+
+  useEffect(() => {
+    void fetch("/api/settings", { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((body: { settings?: Partial<SettingsState> } | null) => {
+        if (!body?.settings) return;
+        setOperationalSettings({
+          drawingNumber: { ...defaultSettings.drawingNumber, ...body.settings.drawingNumber },
+          pricingApproval: { ...defaultSettings.pricingApproval, ...body.settings.pricingApproval },
+          statement: { ...defaultSettings.statement, ...body.settings.statement },
+          alerts: { ...defaultSettings.alerts, ...body.settings.alerts },
+        });
+      })
+      .catch(() => undefined);
   }, []);
 
   function announce(message: string) {
@@ -371,7 +400,7 @@ export default function DashboardApp() {
   function addDrawing(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const id = `DWG-2607-${String(drawings.length + 42).padStart(3, "0")}`;
+    const id = nextDrawingNumber(operationalSettings.drawingNumber, drawings.length + 42);
     const item: Drawing = {
       id,
       name: String(form.get("name") || "신규 품목"),
@@ -462,15 +491,15 @@ export default function DashboardApp() {
                 {page === "drawings" && <button className="primary" onClick={() => setModal(true)}>＋ 새 도면 등록</button>}
               </div>
 
-              {page === "dashboard" && <Dashboard drawings={drawings} onNavigate={navigate} onOpen={setSelectedDrawing} />}
+              {page === "dashboard" && <Dashboard drawings={drawings} alerts={operationalSettings.alerts} onNavigate={navigate} onOpen={setSelectedDrawing} />}
               {page === "drawings" && <DrawingList drawings={filteredDrawings} filter={filter} onFilter={setFilter} onOpen={setSelectedDrawing} />}
-              {page === "pricing" && <Pricing drawings={drawings} selected={priceDrawing} onSelect={setSelectedPrice} onApprove={approve} />}
+              {page === "pricing" && <Pricing drawings={drawings} selected={priceDrawing} approvalConfig={operationalSettings.pricingApproval} onSelect={setSelectedPrice} onApprove={approve} />}
               {page === "orders" && <Orders />}
-              {page === "statements" && <Statements items={statements} selected={statement} onSelect={setSelectedStatement} onIssue={issueStatement} />}
+              {page === "statements" && <Statements items={statements} selected={statement} config={operationalSettings.statement} onSelect={setSelectedStatement} onIssue={issueStatement} />}
               {page === "sales" && <Sales />}
               {page === "cs" && <CS items={tickets} onComplete={(id) => { setTickets((items) => items.map((item) => item.id === id ? { ...item, status: "처리 완료" } : item)); announce("CS 항목을 처리 완료했습니다."); }} />}
               {page === "customers" && <Customers />}
-              {page === "settings" && <Settings onAnnounce={announce} />}
+              {page === "settings" && <Settings onAnnounce={announce} onSettingsSaved={setOperationalSettings} />}
             </>
           )}
         </div>
@@ -499,12 +528,12 @@ export default function DashboardApp() {
   );
 }
 
-function Dashboard({ drawings, onNavigate, onOpen }: { drawings: Drawing[]; onNavigate: (page: Page) => void; onOpen: (id: string) => void }) {
+function Dashboard({ drawings, alerts, onNavigate, onOpen }: { drawings: Drawing[]; alerts: SettingsState["alerts"]; onNavigate: (page: Page) => void; onOpen: (id: string) => void }) {
   const cards: Array<[string, string, string, string, Page]> = [
-    ["▱", "도면 검토 대기", "12", "인식 실패 2건 포함", "drawings"],
+    ["▱", "도면 검토 대기", "12", `${alerts.drawingReviewHours}시간 초과 · 인식 실패 2건`, "drawings"],
     ["₩", "단가 승인 대기", "4", "오늘 요청 3건", "pricing"],
     ["▤", "명세서 미발급", "8", "이번 달 납품분", "statements"],
-    ["◎", "CS 미처리", "5", "긴급 1건", "cs"],
+    ["◎", "CS 미처리", "5", alerts.urgentCsImmediate ? "긴급 1건 · 즉시 알림" : "긴급 1건", "cs"],
   ];
   return (
     <>
@@ -603,7 +632,7 @@ function DrawingDetail({ drawing, onBack, onApprove, onUpdate }: { drawing: Draw
   );
 }
 
-function Pricing({ drawings, selected, onSelect, onApprove }: { drawings: Drawing[]; selected: Drawing; onSelect: (id: string) => void; onApprove: (id: string) => void }) {
+function Pricing({ drawings, selected, approvalConfig, onSelect, onApprove }: { drawings: Drawing[]; selected: Drawing; approvalConfig: SettingsState["pricingApproval"]; onSelect: (id: string) => void; onApprove: (id: string) => void }) {
   const pending = drawings.filter((item) => item.status === "검토 필요" || item.status === "단가 승인");
   return (
     <div className="split">
@@ -617,8 +646,9 @@ function Pricing({ drawings, selected, onSelect, onApprove }: { drawings: Drawin
         <div className="approval-title"><span className="page-icon small">₩</span><div><h2>{selected.name}</h2><p>{selected.id} · {selected.customer}</p></div></div>
         <div className="total"><span>추천 단가</span><strong>{selected.unitPrice ? won(selected.unitPrice) : "산정 필요"}</strong><small>수량 500EA 기준 · 부가세 별도</small></div>
         <dl className="breakdown"><div><dt>기본 공정비</dt><dd>1,200원</dd></div><div><dt>표면적 0.182㎡</dt><dd>420원</dd></div><div><dt>형상·도금 난이도</dt><dd>230원</dd></div></dl>
+        <div className="approval-policy"><span>현재 승인 기준</span><strong>변경 {approvalConfig.changeThreshold}% 이상 · 총액 {Math.round(approvalConfig.amountThreshold / 10000).toLocaleString()}만원 이상</strong><small>목표 마진 {approvalConfig.minimumMargin}% · 단가 유효기간 {approvalConfig.validityDays}일</small></div>
         <label className="field"><span>최종 적용 단가</span><input defaultValue={selected.unitPrice ? selected.unitPrice.toLocaleString() : ""} /></label>
-        <label className="field"><span>승인 사유</span><textarea rows={3} defaultValue="신규 도면 기준단가 적용" /></label>
+        <label className="field"><span>승인 사유 {approvalConfig.requireReason ? "· 필수" : "· 선택"}</span><textarea rows={3} required={approvalConfig.requireReason} defaultValue="신규 도면 기준단가 적용" /></label>
         <div className="two-actions"><button className="secondary">보류</button><button className="primary" onClick={() => onApprove(selected.id)}>단가 승인</button></div>
       </aside>
     </div>
@@ -636,14 +666,14 @@ function Orders() {
   );
 }
 
-function Statements({ items, selected, onSelect, onIssue }: { items: typeof seedStatements; selected: (typeof seedStatements)[number]; onSelect: (id: string) => void; onIssue: (id: string) => void }) {
+function Statements({ items, selected, config, onSelect, onIssue }: { items: typeof seedStatements; selected: (typeof seedStatements)[number]; config: SettingsState["statement"]; onSelect: (id: string) => void; onIssue: (id: string) => void }) {
   return (
     <div className="split statements">
       <section className="panel"><div className="list-tools"><div className="tabs"><button className="active">미발급</button><button>발급 완료</button><button>전체</button></div><button className="secondary compact">월마감 일괄 발급</button></div>
         <table><thead><tr><th>명세서 번호</th><th>고객사</th><th>대상</th><th className="number">공급가액</th><th>상태</th></tr></thead><tbody>{items.map((item) => <tr className={`clickable ${item.id === selected.id ? "selected" : ""}`} onClick={() => onSelect(item.id)} key={item.id}><td><button className="link-button">{item.id}</button></td><td>{item.customer}</td><td>{item.target}</td><td className="number">{won(item.amount)}</td><td><Status>{item.status}</Status></td></tr>)}</tbody></table>
       </section>
       <aside className="statement-preview"><div className="preview-tools"><span>미리보기</span><button>PDF 다운로드</button></div>
-        <div className="paper"><div className="paper-title"><span>거 래 명 세 서</span><small>{selected.id}</small></div><div className="parties"><div><small>공급받는 자</small><strong>{selected.customer}</strong><span>{selected.target}</span></div><div><small>공급자</small><strong>도금산업 주식회사</strong><span>사업자등록번호 000-00-00000</span></div></div>
+        <div className="paper"><div className="paper-title"><span>거 래 명 세 서</span><small>{selected.id}</small></div><div className="parties"><div><small>공급받는 자</small><strong>{selected.customer}</strong><span>{selected.target}</span></div><div><small>공급자</small><strong>{config.supplierName}</strong><span>사업자등록번호 {config.businessNumber}</span></div></div>
           <table><thead><tr><th>품명</th><th>수량</th><th>단가</th><th>공급가액</th></tr></thead><tbody><tr><td>브라켓 A</td><td>1,000</td><td>1,850</td><td>1,850,000</td></tr><tr><td>고정 브라켓</td><td>500</td><td>2,180</td><td>1,090,000</td></tr><tr><td>센서 플레이트</td><td>400</td><td>3,600</td><td>1,440,000</td></tr></tbody></table>
           <div className="paper-total"><span>공급가액 합계</span><strong>{won(selected.amount)}</strong></div></div>
         <button className="primary full" disabled={selected.status === "발급 완료"} onClick={() => onIssue(selected.id)}>{selected.status === "발급 완료" ? `${selected.issuedAt} 발급 완료` : "거래명세서 발급"}</button>
@@ -773,7 +803,7 @@ function Customers() {
   return <section className="panel"><div className="list-tools"><div className="tabs"><button className="active">전체 고객사</button><button>거래 중</button><button>휴면</button></div><button className="primary compact">＋ 고객사 등록</button></div><table><thead><tr><th>고객사</th><th>담당자</th><th>거래 조건</th><th>등록 도면</th><th className="number">누적 매출</th></tr></thead><tbody>{customers.map((item) => <tr key={item[0]}><td><div className="company"><span>{item[0].slice(0, 1)}</span><strong>{item[0]}</strong></div></td><td>{item[1]}</td><td>{item[2]}</td><td>{item[3]}건</td><td className="number">{won(item[4])}</td></tr>)}</tbody></table></section>;
 }
 
-function Settings({ onAnnounce }: { onAnnounce: (message: string) => void }) {
+function Settings({ onAnnounce, onSettingsSaved }: { onAnnounce: (message: string) => void; onSettingsSaved: (settings: SettingsState) => void }) {
   const sections: Array<{
     id: SettingsSection;
     icon: string;
@@ -809,12 +839,14 @@ function Settings({ onAnnounce }: { onAnnounce: (message: string) => void }) {
         error?: string;
       };
       if (!response.ok) throw new Error(body.error ?? "설정을 불러오지 못했습니다.");
-      setSettings({
+      const nextSettings = {
         drawingNumber: { ...defaultSettings.drawingNumber, ...body.settings?.drawingNumber },
         pricingApproval: { ...defaultSettings.pricingApproval, ...body.settings?.pricingApproval },
         statement: { ...defaultSettings.statement, ...body.settings?.statement },
         alerts: { ...defaultSettings.alerts, ...body.settings?.alerts },
-      });
+      };
+      setSettings(nextSettings);
+      onSettingsSaved(nextSettings);
       setUsers(body.users ?? []);
       setLogs(body.logs ?? []);
       setDirty(false);
@@ -878,12 +910,14 @@ function Settings({ onAnnounce }: { onAnnounce: (message: string) => void }) {
         error?: string;
       };
       if (!response.ok) throw new Error(body.error ?? "설정을 저장하지 못했습니다.");
-      setSettings({
+      const savedSettings = {
         drawingNumber: { ...defaultSettings.drawingNumber, ...body.settings?.drawingNumber },
         pricingApproval: { ...defaultSettings.pricingApproval, ...body.settings?.pricingApproval },
         statement: { ...defaultSettings.statement, ...body.settings?.statement },
         alerts: { ...defaultSettings.alerts, ...body.settings?.alerts },
-      });
+      };
+      setSettings(savedSettings);
+      onSettingsSaved(savedSettings);
       setUsers(body.users ?? users);
       setLogs(body.logs ?? logs);
       setDirty(false);
