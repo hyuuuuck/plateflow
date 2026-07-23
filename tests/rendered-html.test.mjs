@@ -42,3 +42,23 @@ test("ships the drawing and pricing workflows with social metadata", async () =>
   assert.match(packageJson, /"name": "drawing-operations-system"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });
+
+test("ships the Excel statement import and sales aggregation workflow", async () => {
+  const [dashboard, importRoute, schema, hosting] = await Promise.all([
+    readFile(new URL("../app/DashboardApp.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/statement-imports/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(dashboard, /Excel 가져오기/);
+  assert.match(dashboard, /열 매핑/);
+  assert.match(dashboard, /검증 완료 · 일괄 등록/);
+  assert.match(dashboard, /read-excel-file\/browser/);
+  assert.match(importRoute, /getFiles\(\)\.put/);
+  assert.match(importRoute, /INSERT OR IGNORE INTO sales_transactions/);
+  assert.match(importRoute, /transactionHash/);
+  assert.match(schema, /customer_excel_mappings/);
+  assert.match(schema, /sales_transactions/);
+  assert.match(hosting, /"r2": "FILES"/);
+});

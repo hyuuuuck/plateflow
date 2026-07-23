@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import readExcelFile from "read-excel-file/browser";
 
 type Page =
   | "dashboard"
@@ -251,6 +252,56 @@ type AuditLog = {
   actor: string;
   createdAt: string;
 };
+type StatementImportBatch = {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  customer: string;
+  sheetName: string;
+  status: string;
+  sourceRows: number;
+  importedRows: number;
+  errorRows: number;
+  duplicateRows: number;
+  importedBy: string;
+  createdAt: string;
+};
+type StatementImportAnalytics = {
+  year: string;
+  summary: { amount: number; count: number };
+  monthly: Array<{ month: number; amount: number; count: number }>;
+  customers: Array<{ customer: string; amount: number; count: number }>;
+  batches: StatementImportBatch[];
+  mappings: Array<{
+    customer: string;
+    sheetName: string;
+    mapping: Record<string, string>;
+    updatedAt: string;
+  }>;
+};
+type ExcelMappingKey =
+  | "transactionDate"
+  | "customer"
+  | "itemCode"
+  | "itemName"
+  | "quantity"
+  | "unitPrice"
+  | "supplyAmount"
+  | "taxAmount"
+  | "note";
+type ExcelMapping = Record<ExcelMappingKey, string>;
+type ParsedImportRow = {
+  sourceRow: number;
+  transactionDate: string;
+  customer: string;
+  itemCode: string;
+  itemName: string;
+  quantity: number;
+  unitPrice: number;
+  supplyAmount: number;
+  taxAmount: number;
+  note: string;
+};
 
 const defaultSettings: SettingsState = {
   drawingNumber: {
@@ -495,7 +546,7 @@ export default function DashboardApp() {
               {page === "drawings" && <DrawingList drawings={filteredDrawings} filter={filter} onFilter={setFilter} onOpen={setSelectedDrawing} />}
               {page === "pricing" && <Pricing drawings={drawings} selected={priceDrawing} approvalConfig={operationalSettings.pricingApproval} onSelect={setSelectedPrice} onApprove={approve} />}
               {page === "orders" && <Orders />}
-              {page === "statements" && <Statements items={statements} selected={statement} config={operationalSettings.statement} onSelect={setSelectedStatement} onIssue={issueStatement} />}
+              {page === "statements" && <Statements items={statements} selected={statement} config={operationalSettings.statement} onSelect={setSelectedStatement} onIssue={issueStatement} onAnnounce={announce} />}
               {page === "sales" && <Sales />}
               {page === "cs" && <CS items={tickets} onComplete={(id) => { setTickets((items) => items.map((item) => item.id === id ? { ...item, status: "처리 완료" } : item)); announce("CS 항목을 처리 완료했습니다."); }} />}
               {page === "customers" && <Customers />}
@@ -666,48 +717,450 @@ function Orders() {
   );
 }
 
-function Statements({ items, selected, config, onSelect, onIssue }: { items: typeof seedStatements; selected: (typeof seedStatements)[number]; config: SettingsState["statement"]; onSelect: (id: string) => void; onIssue: (id: string) => void }) {
+function Statements({ items, selected, config, onSelect, onIssue, onAnnounce }: { items: typeof seedStatements; selected: (typeof seedStatements)[number]; config: SettingsState["statement"]; onSelect: (id: string) => void; onIssue: (id: string) => void; onAnnounce: (message: string) => void }) {
+  const [mode, setMode] = useState<"statements" | "imports">("statements");
+  const [showImport, setShowImport] = useState(false);
+  const [analytics, setAnalytics] = useState<StatementImportAnalytics | null>(null);
+  const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
+
+  async function loadImports() {
+    try {
+      const response = await fetch("/api/statement-imports", { cache: "no-store" });
+      if (!response.ok) return;
+      const body = await response.json() as StatementImportAnalytics;
+      setAnalytics(body);
+      setSelectedBatchId((current) => current ?? body.batches[0]?.id ?? null);
+    } catch {
+      // Excel history is supplementary to the existing statement list.
+    }
+  }
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => void loadImports(), 0);
+    return () => window.clearTimeout(timeout);
+  }, []);
+
+  const selectedBatch = analytics?.batches.find((batch) => batch.id === selectedBatchId) ?? analytics?.batches[0];
+
   return (
-    <div className="split statements">
-      <section className="panel"><div className="list-tools"><div className="tabs"><button className="active">미발급</button><button>발급 완료</button><button>전체</button></div><button className="secondary compact">월마감 일괄 발급</button></div>
-        <table><thead><tr><th>명세서 번호</th><th>고객사</th><th>대상</th><th className="number">공급가액</th><th>상태</th></tr></thead><tbody>{items.map((item) => <tr className={`clickable ${item.id === selected.id ? "selected" : ""}`} onClick={() => onSelect(item.id)} key={item.id}><td><button className="link-button">{item.id}</button></td><td>{item.customer}</td><td>{item.target}</td><td className="number">{won(item.amount)}</td><td><Status>{item.status}</Status></td></tr>)}</tbody></table>
+    <>
+      {analytics && analytics.batches.length > 0 && (
+        <div className="import-summary">
+          <div><small>Excel 등록 누계</small><strong>{analytics.summary.count.toLocaleString()}건</strong></div>
+          <div><small>등록 공급가액</small><strong>{won(analytics.summary.amount)}</strong></div>
+          <div><small>최근 등록</small><strong>{analytics.batches[0].customer}</strong><span>{analytics.batches[0].fileName}</span></div>
+        </div>
+      )}
+      <div className="split statements">
+        <section className="panel">
+          <div className="list-tools">
+            <div className="tabs">
+              <button className={mode === "statements" ? "active" : ""} onClick={() => setMode("statements")}>거래명세서</button>
+              <button className={mode === "imports" ? "active" : ""} onClick={() => setMode("imports")}>Excel 등록 이력 {analytics?.batches.length || ""}</button>
+            </div>
+            <button className="primary compact" onClick={() => setShowImport(true)}>↑ Excel 가져오기</button>
+          </div>
+          {mode === "statements" ? (
+            <table><thead><tr><th>명세서 번호</th><th>고객사</th><th>대상</th><th className="number">공급가액</th><th>상태</th></tr></thead><tbody>{items.map((item) => <tr className={`clickable ${item.id === selected.id ? "selected" : ""}`} onClick={() => onSelect(item.id)} key={item.id}><td><button className="link-button">{item.id}</button></td><td>{item.customer}</td><td>{item.target}</td><td className="number">{won(item.amount)}</td><td><Status>{item.status}</Status></td></tr>)}</tbody></table>
+          ) : analytics?.batches.length ? (
+            <table><thead><tr><th>파일 / 등록번호</th><th>고객사</th><th>시트</th><th>등록 결과</th><th>등록일</th></tr></thead><tbody>{analytics.batches.map((batch) => <tr className={`clickable ${batch.id === selectedBatch?.id ? "selected" : ""}`} onClick={() => setSelectedBatchId(batch.id)} key={batch.id}><td><Record title={batch.fileName} subtitle={batch.id} /></td><td>{batch.customer}</td><td>{batch.sheetName}</td><td><Status>{batch.status === "completed" ? "등록 완료" : batch.status === "failed" ? "등록 실패" : "처리 중"}</Status></td><td className="muted">{new Intl.DateTimeFormat("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(batch.createdAt))}</td></tr>)}</tbody></table>
+          ) : (
+            <div className="empty"><span>▦</span><strong>등록된 Excel 파일이 없습니다.</strong><p>고객사 거래명세서 Excel을 가져오면 등록 이력이 표시됩니다.</p></div>
+          )}
+        </section>
+        {mode === "statements" ? (
+          <aside className="statement-preview"><div className="preview-tools"><span>미리보기</span><button>PDF 다운로드</button></div>
+            <div className="paper"><div className="paper-title"><span>거 래 명 세 서</span><small>{selected.id}</small></div><div className="parties"><div><small>공급받는 자</small><strong>{selected.customer}</strong><span>{selected.target}</span></div><div><small>공급자</small><strong>{config.supplierName}</strong><span>사업자등록번호 {config.businessNumber}</span></div></div>
+              <table><thead><tr><th>품명</th><th>수량</th><th>단가</th><th>공급가액</th></tr></thead><tbody><tr><td>브라켓 A</td><td>1,000</td><td>1,850</td><td>1,850,000</td></tr><tr><td>고정 브라켓</td><td>500</td><td>2,180</td><td>1,090,000</td></tr><tr><td>센서 플레이트</td><td>400</td><td>3,600</td><td>1,440,000</td></tr></tbody></table>
+              <div className="paper-total"><span>공급가액 합계</span><strong>{won(selected.amount)}</strong></div></div>
+            <button className="primary full" disabled={selected.status === "발급 완료"} onClick={() => onIssue(selected.id)}>{selected.status === "발급 완료" ? `${selected.issuedAt} 발급 완료` : "거래명세서 발급"}</button>
+          </aside>
+        ) : (
+          <aside className="import-detail">
+            {selectedBatch ? (
+              <>
+                <header><span>XL</span><div><small>EXCEL IMPORT</small><strong>{selectedBatch.fileName}</strong><p>{selectedBatch.customer} · {selectedBatch.sheetName}</p></div></header>
+                <dl><div><dt>원본 행</dt><dd>{selectedBatch.sourceRows.toLocaleString()}행</dd></div><div><dt>등록 완료</dt><dd>{selectedBatch.importedRows.toLocaleString()}건</dd></div><div><dt>오류 제외</dt><dd>{selectedBatch.errorRows.toLocaleString()}건</dd></div><div><dt>중복 제외</dt><dd>{selectedBatch.duplicateRows.toLocaleString()}건</dd></div></dl>
+                <p className="import-actor">등록자 {selectedBatch.importedBy}<br />{new Date(selectedBatch.createdAt).toLocaleString("ko-KR")}</p>
+                <a className="secondary full import-download" href={`/api/statement-imports?download=${encodeURIComponent(selectedBatch.id)}`}>↓ 원본 Excel 다운로드</a>
+              </>
+            ) : <div className="empty"><span>XL</span><strong>이력을 선택하세요.</strong></div>}
+          </aside>
+        )}
+      </div>
+      {showImport && (
+        <ExcelImportModal
+          savedMappings={analytics?.mappings ?? []}
+          onClose={() => setShowImport(false)}
+          onImported={(nextAnalytics) => {
+            setAnalytics(nextAnalytics);
+            setSelectedBatchId(nextAnalytics.batches[0]?.id ?? null);
+            setMode("imports");
+            setShowImport(false);
+            onAnnounce("Excel 거래내역이 등록되고 매출 데이터에 반영되었습니다.");
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+const excelFieldDefinitions: Array<{
+  key: ExcelMappingKey;
+  label: string;
+  required?: boolean;
+  aliases: string[];
+}> = [
+  { key: "transactionDate", label: "거래일", required: true, aliases: ["거래일", "일자", "납품일", "거래일자", "date", "deliverydate"] },
+  { key: "customer", label: "고객사", aliases: ["고객사", "거래처", "업체명", "상호", "customer", "company"] },
+  { key: "itemCode", label: "품목코드", aliases: ["품목코드", "품번", "도면번호", "제품코드", "itemcode", "partno"] },
+  { key: "itemName", label: "품명", required: true, aliases: ["품명", "제품명", "품목명", "내역", "item", "itemname", "description"] },
+  { key: "quantity", label: "수량", required: true, aliases: ["수량", "납품수량", "qty", "quantity"] },
+  { key: "unitPrice", label: "단가", aliases: ["단가", "공급단가", "unitprice", "price"] },
+  { key: "supplyAmount", label: "공급가액", aliases: ["공급가액", "금액", "합계", "매출액", "amount", "supplyamount"] },
+  { key: "taxAmount", label: "부가세", aliases: ["부가세", "세액", "vat", "tax"] },
+  { key: "note", label: "비고", aliases: ["비고", "메모", "특이사항", "note", "remark"] },
+];
+
+const emptyExcelMapping: ExcelMapping = {
+  transactionDate: "",
+  customer: "",
+  itemCode: "",
+  itemName: "",
+  quantity: "",
+  unitPrice: "",
+  supplyAmount: "",
+  taxAmount: "",
+  note: "",
+};
+
+function normalizedHeader(value: unknown) {
+  return String(value ?? "").toLowerCase().replace(/[\s_.·/()-]+/g, "");
+}
+
+function detectHeaderRow(data: unknown[][]) {
+  let bestIndex = 0;
+  let bestScore = -1;
+  data.slice(0, 15).forEach((row, index) => {
+    const cells = row.map(normalizedHeader);
+    const score = excelFieldDefinitions.reduce(
+      (total, field) => total + (field.aliases.some((alias) => cells.some((cell) => cell.includes(normalizedHeader(alias)))) ? 1 : 0),
+      0,
+    );
+    if (score > bestScore) {
+      bestIndex = index;
+      bestScore = score;
+    }
+  });
+  return bestIndex;
+}
+
+function inferExcelMapping(headers: string[]) {
+  const next = { ...emptyExcelMapping };
+  excelFieldDefinitions.forEach((field) => {
+    const match = headers.find((header) => {
+      const normalized = normalizedHeader(header);
+      return field.aliases.some((alias) => {
+        const normalizedAlias = normalizedHeader(alias);
+        return normalized === normalizedAlias || normalized.includes(normalizedAlias);
+      });
+    });
+    if (match) next[field.key] = match;
+  });
+  return next;
+}
+
+function excelDate(value: unknown) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+  if (typeof value === "number" && value > 20000 && value < 80000) {
+    const date = new Date(Math.round((value - 25569) * 86400 * 1000));
+    return date.toISOString().slice(0, 10);
+  }
+  const compact = String(value ?? "").trim().replace(/[./]/g, "-");
+  const digits = compact.replace(/\D/g, "");
+  if (digits.length === 8) {
+    const date = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+    return validExcelDate(date) ? date : "";
+  }
+  const match = compact.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!match) return "";
+  const date = `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+  return validExcelDate(date) ? date : "";
+}
+
+function validExcelDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function excelNumber(value: unknown) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const normalized = String(value ?? "").replace(/[,\s₩원]/g, "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parsedExcelRows(data: unknown[][], headerRow: number, mapping: ExcelMapping, fallbackCustomer: string) {
+  const headers = (data[headerRow] ?? []).map((cell) => String(cell ?? "").trim());
+  const indexes = Object.fromEntries(
+    Object.entries(mapping).map(([key, header]) => [key, header ? headers.indexOf(header) : -1]),
+  ) as Record<ExcelMappingKey, number>;
+  const validRows: ParsedImportRow[] = [];
+  const errors: Array<{ row: number; messages: string[] }> = [];
+  const preview: Array<ParsedImportRow & { messages: string[] }> = [];
+
+  data.slice(headerRow + 1).forEach((row, index) => {
+    if (!row.some((cell) => String(cell ?? "").trim())) return;
+    const sourceRow = headerRow + index + 2;
+    const cell = (key: ExcelMappingKey) => indexes[key] >= 0 ? row[indexes[key]] : undefined;
+    const quantity = excelNumber(cell("quantity"));
+    const mappedUnitPrice = excelNumber(cell("unitPrice"));
+    const mappedSupplyAmount = excelNumber(cell("supplyAmount"));
+    const supplyAmount = mappedSupplyAmount || Math.round(quantity * mappedUnitPrice);
+    const unitPrice = mappedUnitPrice || (quantity ? Math.round(supplyAmount / quantity) : 0);
+    const taxAmount = indexes.taxAmount >= 0 ? excelNumber(cell("taxAmount")) : Math.round(supplyAmount * 0.1);
+    const parsed: ParsedImportRow = {
+      sourceRow,
+      transactionDate: excelDate(cell("transactionDate")),
+      customer: String(cell("customer") ?? fallbackCustomer).trim(),
+      itemCode: String(cell("itemCode") ?? "").trim(),
+      itemName: String(cell("itemName") ?? "").trim(),
+      quantity: Math.round(quantity),
+      unitPrice: Math.round(unitPrice),
+      supplyAmount: Math.round(supplyAmount),
+      taxAmount: Math.round(taxAmount),
+      note: String(cell("note") ?? "").trim(),
+    };
+    const messages: string[] = [];
+    if (!parsed.transactionDate) messages.push("거래일 확인");
+    if (!parsed.customer) messages.push("고객사 확인");
+    if (!parsed.itemName) messages.push("품명 확인");
+    if (!parsed.quantity) messages.push("수량 확인");
+    if (!parsed.supplyAmount) messages.push("단가 또는 공급가액 확인");
+    if (messages.length) errors.push({ row: sourceRow, messages });
+    else validRows.push(parsed);
+    if (preview.length < 8) preview.push({ ...parsed, messages });
+  });
+
+  return { validRows, errors, preview, sourceRows: validRows.length + errors.length };
+}
+
+function ExcelImportModal({ savedMappings, onClose, onImported }: { savedMappings: StatementImportAnalytics["mappings"]; onClose: () => void; onImported: (analytics: StatementImportAnalytics) => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [sheets, setSheets] = useState<Array<{ sheet: string; data: unknown[][] }>>([]);
+  const [sheetName, setSheetName] = useState("");
+  const [headerRow, setHeaderRow] = useState(0);
+  const [customer, setCustomer] = useState("");
+  const [mapping, setMapping] = useState<ExcelMapping>(emptyExcelMapping);
+  const [allowDuplicates, setAllowDuplicates] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+  const sheet = sheets.find((item) => item.sheet === sheetName) ?? sheets[0];
+  const headers = useMemo(
+    () => (sheet?.data[headerRow] ?? []).map((cell) => String(cell ?? "").trim()).filter(Boolean),
+    [headerRow, sheet],
+  );
+  const parsed = useMemo(
+    () => parsedExcelRows(sheet?.data ?? [], headerRow, mapping, customer),
+    [customer, headerRow, mapping, sheet],
+  );
+  const requiredMapped = Boolean(mapping.transactionDate && mapping.itemName && mapping.quantity && (mapping.unitPrice || mapping.supplyAmount));
+
+  function activateSheet(nextSheet: { sheet: string; data: unknown[][] }) {
+    const nextHeaderRow = detectHeaderRow(nextSheet.data);
+    const nextHeaders = (nextSheet.data[nextHeaderRow] ?? []).map((cell) => String(cell ?? "").trim()).filter(Boolean);
+    setSheetName(nextSheet.sheet);
+    setHeaderRow(nextHeaderRow);
+    setMapping(inferExcelMapping(nextHeaders));
+  }
+
+  async function chooseFile(nextFile: File | null) {
+    if (!nextFile) return;
+    if (!nextFile.name.toLowerCase().endsWith(".xlsx")) {
+      setError("현재는 Excel .xlsx 파일을 선택해주세요.");
+      return;
+    }
+    if (nextFile.size > 20 * 1024 * 1024) {
+      setError("Excel 파일은 최대 20MB까지 선택할 수 있습니다.");
+      return;
+    }
+    setReading(true);
+    setError("");
+    try {
+      const workbook = await readExcelFile(nextFile) as Array<{ sheet: string; data: unknown[][] }>;
+      if (!workbook.length) throw new Error("empty workbook");
+      setFile(nextFile);
+      setSheets(workbook);
+      activateSheet(workbook[0]);
+    } catch {
+      setError("Excel 파일을 읽지 못했습니다. 암호가 설정되지 않은 .xlsx 파일인지 확인해주세요.");
+    } finally {
+      setReading(false);
+    }
+  }
+
+  function changeCustomer(value: string) {
+    setCustomer(value);
+    const saved = savedMappings.find((item) => item.customer === value);
+    if (!saved) return;
+    setMapping((current) => {
+      const next = { ...current };
+      Object.entries(saved.mapping).forEach(([key, header]) => {
+        if (key in next && headers.includes(header)) next[key as ExcelMappingKey] = header;
+      });
+      return next;
+    });
+  }
+
+  async function submitImport() {
+    if (!file || !sheet || !customer || !requiredMapped || !parsed.validRows.length || parsed.sourceRows > 5000) return;
+    setSaving(true);
+    setError("");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("payload", JSON.stringify({
+        customer,
+        sheetName: sheet.sheet,
+        mapping,
+        rows: parsed.validRows,
+        sourceRows: parsed.sourceRows,
+        errorRows: parsed.errors.length,
+        allowDuplicates,
+      }));
+      const response = await fetch("/api/statement-imports", { method: "POST", body: form });
+      const body = await response.json() as { analytics?: StatementImportAnalytics; error?: string };
+      if (!response.ok || !body.analytics) throw new Error(body.error ?? "Excel 거래내역을 등록하지 못했습니다.");
+      onImported(body.analytics);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Excel 거래내역을 등록하지 못했습니다.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop excel-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="excel-modal" role="dialog" aria-modal="true" aria-labelledby="excel-import-title">
+        <header className="excel-modal-head">
+          <div><small>MICROSOFT EXCEL IMPORT</small><h2 id="excel-import-title">거래명세서 가져오기</h2><p>열을 확인한 뒤 유효한 거래 행만 일괄 등록합니다.</p></div>
+          <button className="icon-button" onClick={onClose} aria-label="닫기">×</button>
+        </header>
+
+        <div className="excel-import-content">
+          <aside className="excel-steps">
+            {[["01", "파일 선택", Boolean(file)], ["02", "열 매핑", requiredMapped], ["03", "검증·등록", Boolean(parsed.validRows.length && !parsed.errors.length)]].map(([number, label, done]) => <div className={done ? "done" : ""} key={String(number)}><span>{done ? "✓" : number}</span><strong>{label}</strong></div>)}
+            <p>.xlsx · 최대 20MB<br />한 번에 최대 5,000행</p>
+          </aside>
+
+          <div className="excel-workspace">
+            <section className="excel-file-card">
+              <input ref={fileRef} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => void chooseFile(event.target.files?.[0] ?? null)} hidden />
+              {file ? <><span>XL</span><div><strong>{file.name}</strong><small>{(file.size / 1024).toFixed(1)}KB · {sheets.length}개 시트</small></div><button className="secondary compact" onClick={() => fileRef.current?.click()}>파일 변경</button></> : <button className="excel-drop" onClick={() => fileRef.current?.click()} disabled={reading}><span>XL</span><strong>{reading ? "Excel 분석 중…" : "Excel 파일 선택"}</strong><small>고객사에서 받은 원본 .xlsx 파일</small></button>}
+            </section>
+
+            {sheet && (
+              <>
+                <section className="excel-options">
+                  <label><span>고객사</span><input list="excel-customer-options" value={customer} placeholder="선택 또는 직접 입력" onChange={(event) => changeCustomer(event.target.value)} /><datalist id="excel-customer-options">{customers.map((item) => <option value={item[0]} key={item[0]} />)}</datalist></label>
+                  <label><span>시트</span><select value={sheet.sheet} onChange={(event) => { const next = sheets.find((item) => item.sheet === event.target.value); if (next) activateSheet(next); }}>{sheets.map((item) => <option key={item.sheet}>{item.sheet}</option>)}</select></label>
+                  <label><span>헤더 행</span><select value={headerRow} onChange={(event) => { const nextRow = Number(event.target.value); setHeaderRow(nextRow); setMapping(inferExcelMapping((sheet.data[nextRow] ?? []).map((cell) => String(cell ?? "").trim()).filter(Boolean))); }}>{sheet.data.slice(0, 10).map((row, index) => <option value={index} key={index}>{index + 1}행 · {row.slice(0, 3).map((cell) => String(cell ?? "")).join(" / ") || "빈 행"}</option>)}</select></label>
+                </section>
+
+                <section className="mapping-section">
+                  <header><div><h3>열 매핑</h3><p>필수 항목은 거래일, 품명, 수량과 단가 또는 공급가액입니다.</p></div><span>{Object.values(mapping).filter(Boolean).length}/{excelFieldDefinitions.length} 연결</span></header>
+                  <div className="mapping-grid">{excelFieldDefinitions.map((field) => <label key={field.key}><span>{field.label}{field.required ? <b>*</b> : ""}</span><select value={mapping[field.key]} onChange={(event) => setMapping((current) => ({ ...current, [field.key]: event.target.value }))}><option value="">연결 안 함</option>{headers.map((header) => <option key={header}>{header}</option>)}</select></label>)}</div>
+                </section>
+
+                <section className="excel-validation">
+                  <header><div><h3>데이터 검증</h3><p>원본 {parsed.sourceRows.toLocaleString()}행 중 등록 가능한 거래를 확인합니다.</p></div><div><span className="valid">정상 {parsed.validRows.length}</span><span className={parsed.errors.length ? "invalid" : ""}>오류 {parsed.errors.length}</span></div></header>
+                  <div className="excel-preview-table"><table><thead><tr><th>행</th><th>거래일</th><th>고객사</th><th>품명</th><th className="number">수량</th><th className="number">공급가액</th><th>검증</th></tr></thead><tbody>{parsed.preview.map((row) => <tr key={row.sourceRow}><td>{row.sourceRow}</td><td>{row.transactionDate || "-"}</td><td>{row.customer || "-"}</td><td>{row.itemName || "-"}</td><td className="number">{row.quantity.toLocaleString()}</td><td className="number">{row.supplyAmount.toLocaleString()}</td><td>{row.messages.length ? <Status>확인 필요</Status> : <Status>정상 완료</Status>}</td></tr>)}</tbody></table></div>
+                  {parsed.sourceRows > 5000 && <p className="validation-note">한 번에 최대 5,000행까지 등록할 수 있습니다. 파일을 나누어 등록해주세요.</p>}
+                  {parsed.errors.length > 0 && <p className="validation-note">오류 행은 등록에서 제외됩니다: {parsed.errors.slice(0, 4).map((item) => `${item.row}행 ${item.messages.join(", ")}`).join(" · ")}{parsed.errors.length > 4 ? ` 외 ${parsed.errors.length - 4}건` : ""}</p>}
+                  <label className="check duplicate-check"><input type="checkbox" checked={allowDuplicates} onChange={(event) => setAllowDuplicates(event.target.checked)} /> 동일한 거래일·고객사·품명·금액의 기존 거래도 새 건으로 등록합니다.</label>
+                </section>
+              </>
+            )}
+            {error && <div className="excel-error">{error}</div>}
+          </div>
+        </div>
+
+        <footer className="excel-modal-actions">
+          <div>{file && <><strong>{parsed.validRows.length.toLocaleString()}건 등록 예정</strong><span>오류 {parsed.errors.length}건 제외</span></>}</div>
+          <button className="secondary" onClick={onClose}>취소</button>
+          <button className="primary" disabled={!file || !customer || !requiredMapped || !parsed.validRows.length || parsed.sourceRows > 5000 || saving} onClick={() => void submitImport()}>{saving ? "등록 중…" : "검증 완료 · 일괄 등록"}</button>
+        </footer>
       </section>
-      <aside className="statement-preview"><div className="preview-tools"><span>미리보기</span><button>PDF 다운로드</button></div>
-        <div className="paper"><div className="paper-title"><span>거 래 명 세 서</span><small>{selected.id}</small></div><div className="parties"><div><small>공급받는 자</small><strong>{selected.customer}</strong><span>{selected.target}</span></div><div><small>공급자</small><strong>{config.supplierName}</strong><span>사업자등록번호 {config.businessNumber}</span></div></div>
-          <table><thead><tr><th>품명</th><th>수량</th><th>단가</th><th>공급가액</th></tr></thead><tbody><tr><td>브라켓 A</td><td>1,000</td><td>1,850</td><td>1,850,000</td></tr><tr><td>고정 브라켓</td><td>500</td><td>2,180</td><td>1,090,000</td></tr><tr><td>센서 플레이트</td><td>400</td><td>3,600</td><td>1,440,000</td></tr></tbody></table>
-          <div className="paper-total"><span>공급가액 합계</span><strong>{won(selected.amount)}</strong></div></div>
-        <button className="primary full" disabled={selected.status === "발급 완료"} onClick={() => onIssue(selected.id)}>{selected.status === "발급 완료" ? `${selected.issuedAt} 발급 완료` : "거래명세서 발급"}</button>
-      </aside>
     </div>
   );
 }
 
 function Sales() {
+  const [excelAnalytics, setExcelAnalytics] = useState<StatementImportAnalytics | null>(null);
   const yearlyTarget = 91;
-  const cumulativeSales = monthlySales.reduce((sum, amount) => sum + amount, 0);
-  const customerTotal = customers.reduce((sum, customer) => sum + customer[4], 0);
-  const topCustomerShare = (customerTotal / (cumulativeSales * 1000000)) * 100;
+  useEffect(() => {
+    void fetch("/api/statement-imports", { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((body: StatementImportAnalytics | null) => setExcelAnalytics(body))
+      .catch(() => undefined);
+  }, []);
+
+  const hasExcelData = Boolean(excelAnalytics?.summary.count);
+  const monthCount = hasExcelData
+    ? Math.max(7, Math.min(12, Math.max(...(excelAnalytics?.monthly.map((item) => item.month) ?? [7]))))
+    : monthlySales.length;
+  const salesSeries = hasExcelData
+    ? Array.from({ length: monthCount }, (_, index) => {
+        const amount = excelAnalytics?.monthly.find((item) => item.month === index + 1)?.amount ?? 0;
+        return amount / 1000000;
+      })
+    : monthlySales;
+  const cumulativeSales = salesSeries.reduce((sum, amount) => sum + amount, 0);
+  const currentMonthIndex = Math.max(0, salesSeries.findLastIndex((amount) => amount > 0));
+  const currentMonthSales = salesSeries[currentMonthIndex] || 0;
+  const previousMonthSales = salesSeries[Math.max(0, currentMonthIndex - 1)] || 0;
+  const monthChange = previousMonthSales ? ((currentMonthSales - previousMonthSales) / previousMonthSales) * 100 : 0;
+  const scaleMax = Math.max(100, Math.ceil(Math.max(...salesSeries, yearlyTarget) / 25) * 25);
+  const customerSeries = hasExcelData
+    ? (excelAnalytics?.customers ?? []).slice(0, 4).map((item) => ({ name: item.customer, amount: item.amount }))
+    : customers.map((item) => ({ name: item[0], amount: item[4] }));
+  const customerTotal = customerSeries.reduce((sum, customer) => sum + customer.amount, 0);
+  const totalWon = cumulativeSales * 1000000;
+  const topCustomerShare = totalWon ? (customerTotal / totalWon) * 100 : 0;
+  const compactSales = (amount: number) => amount >= 100000000
+    ? `${(amount / 100000000).toFixed(2)}억원`
+    : `${Math.round(amount / 10000).toLocaleString()}만원`;
   const summaries = [
     {
       index: "01",
-      label: "2026년 누적 매출",
-      value: "4.82억원",
-      change: "+12.4%",
-      context: "전년 동기",
+      label: `${excelAnalytics?.year ?? "2026"}년 누적 매출`,
+      value: compactSales(totalWon),
+      change: hasExcelData ? `${excelAnalytics?.summary.count.toLocaleString()}건` : "+12.4%",
+      context: hasExcelData ? "Excel 등록 거래" : "전년 동기",
     },
     {
       index: "02",
-      label: "7월 확정 매출",
-      value: "8,600만원",
-      change: "94.5%",
+      label: `${currentMonthIndex + 1}월 확정 매출`,
+      value: compactSales(currentMonthSales * 1000000),
+      change: `${((currentMonthSales / yearlyTarget) * 100).toFixed(1)}%`,
       context: "월 목표 달성률",
     },
     {
       index: "03",
       label: "평균 거래단가",
-      value: "2,840원",
-      change: "+3.1%",
-      context: "전월 대비",
+      value: hasExcelData && excelAnalytics?.summary.count
+        ? won(Math.round(totalWon / excelAnalytics.summary.count))
+        : "2,840원",
+      change: `${monthChange >= 0 ? "+" : ""}${monthChange.toFixed(1)}%`,
+      context: "전월 매출 대비",
     },
   ];
 
@@ -726,25 +1179,25 @@ function Sales() {
         <section className="panel sales-panel">
           <SectionHead
             title="월별 매출 추이"
-            description="확정 납품 공급가액 · 단위 백만원"
-            action={<button className="report-period">2026년 1–7월 <span>⌄</span></button>}
+            description={hasExcelData ? "Excel 등록 공급가액 · 단위 백만원" : "확정 납품 공급가액 · 단위 백만원"}
+            action={<button className="report-period">{excelAnalytics?.year ?? "2026"}년 1–{monthCount}월 <span>⌄</span></button>}
           />
           <div className="sales-chart">
             <div className="chart-scale" aria-hidden="true">
-              <span>100</span><span>75</span><span>50</span><span>25</span><span>0</span>
+              <span>{scaleMax}</span><span>{Math.round(scaleMax * .75)}</span><span>{Math.round(scaleMax * .5)}</span><span>{Math.round(scaleMax * .25)}</span><span>0</span>
             </div>
-            <div className="chart-plot">
-              <div className="target-line" style={{ bottom: `${yearlyTarget}%` }}>
+            <div className="chart-plot" style={{ gridTemplateColumns: `repeat(${salesSeries.length}, minmax(34px, 1fr))` }}>
+              <div className="target-line" style={{ bottom: `${(yearlyTarget / scaleMax) * 100}%` }}>
                 <span>월 목표 91</span>
               </div>
-              {monthlySales.map((amount, index) => (
+              {salesSeries.map((amount, index) => (
                 <div className="bar-column" key={index}>
                   <div className="bar-track">
                     <i
-                      className={index === monthlySales.length - 1 ? "current" : ""}
-                      style={{ height: `${amount}%` }}
+                      className={index === currentMonthIndex ? "current" : ""}
+                      style={{ height: `${Math.max(2, (amount / scaleMax) * 100)}%` }}
                     >
-                      <b>{amount}</b>
+                      <b>{amount ? Math.round(amount) : "-"}</b>
                     </i>
                   </div>
                   <small>{String(index + 1).padStart(2, "0")}</small>
@@ -753,31 +1206,31 @@ function Sales() {
             </div>
           </div>
           <div className="chart-summary">
-            <div><small>누적</small><strong>{cumulativeSales}백만원</strong></div>
-            <div><small>월평균</small><strong>{(cumulativeSales / monthlySales.length).toFixed(1)}백만원</strong></div>
-            <p><span>07월</span> 전월보다 <b>3.6%</b> 증가했으며 월 목표의 <b>94.5%</b>를 달성했습니다.</p>
+            <div><small>누적</small><strong>{cumulativeSales.toFixed(1)}백만원</strong></div>
+            <div><small>월평균</small><strong>{(cumulativeSales / salesSeries.length).toFixed(1)}백만원</strong></div>
+            <p><span>{String(currentMonthIndex + 1).padStart(2, "0")}월</span> 전월보다 <b>{Math.abs(monthChange).toFixed(1)}%</b> {monthChange >= 0 ? "증가" : "감소"}했으며 월 목표의 <b>{((currentMonthSales / yearlyTarget) * 100).toFixed(1)}%</b>를 달성했습니다.</p>
           </div>
         </section>
         <section className="panel sales-panel customer-sales">
           <SectionHead
             title="고객사별 매출"
-            description="2026년 누적 · 전체 매출 대비 비중"
-            action={<span className="report-code">TOP 04</span>}
+            description={`${excelAnalytics?.year ?? "2026"}년 누적 · 전체 매출 대비 비중`}
+            action={<span className="report-code">TOP {String(customerSeries.length).padStart(2, "0")}</span>}
           />
           <ol className="report-ranking">
-            {customers.map((item, index) => {
-              const share = (item[4] / (cumulativeSales * 1000000)) * 100;
+            {customerSeries.map((item, index) => {
+              const share = totalWon ? (item.amount / totalWon) * 100 : 0;
               return (
-                <li key={item[0]}>
+                <li key={item.name}>
                   <span>{String(index + 1).padStart(2, "0")}</span>
                   <div>
-                    <header><strong>{item[0]}</strong><em>{share.toFixed(1)}%</em></header>
+                    <header><strong>{item.name}</strong><em>{share.toFixed(1)}%</em></header>
                     <div className="rank-track">
-                      <i style={{ width: `${Math.round((item[4] / customers[0][4]) * 100)}%` }} />
+                      <i style={{ width: `${Math.round((item.amount / (customerSeries[0]?.amount || 1)) * 100)}%` }} />
                     </div>
                     <small>누적 공급가액</small>
                   </div>
-                  <b>{(item[4] / 1000000).toFixed(1)}M</b>
+                  <b>{(item.amount / 1000000).toFixed(1)}M</b>
                 </li>
               );
             })}
@@ -858,7 +1311,10 @@ function Settings({ onAnnounce, onSettingsSaved }: { onAnnounce: (message: strin
   }
 
   useEffect(() => {
-    void loadSettings();
+    const timeout = window.setTimeout(() => void loadSettings(), 0);
+    return () => window.clearTimeout(timeout);
+    // Reload is also exposed as an explicit user action below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function updateSetting(section: ConfigSection, field: string, value: string | number | boolean) {

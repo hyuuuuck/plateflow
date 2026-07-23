@@ -15,6 +15,13 @@
       "when": 1784802766427,
       "tag": "0001_graceful_leper_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784804123577,
+      "tag": "0002_nappy_mauler",
+      "breakpoints": true
     }
   ]
 }
