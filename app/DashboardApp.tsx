@@ -203,6 +203,87 @@ const customers = [
 
 const monthlySales = [52, 59, 62, 68, 72, 83, 86];
 
+type ConfigSection = "drawingNumber" | "pricingApproval" | "statement" | "alerts";
+type SettingsSection = ConfigSection | "users" | "audit";
+type SettingsState = {
+  drawingNumber: {
+    format: string;
+    prefix: string;
+    sequenceDigits: number;
+    resetCycle: string;
+    allowManualOverride: boolean;
+  };
+  pricingApproval: {
+    changeThreshold: number;
+    amountThreshold: number;
+    minimumMargin: number;
+    validityDays: number;
+    requireReason: boolean;
+  };
+  statement: {
+    supplierName: string;
+    businessNumber: string;
+    closingDay: string;
+    paymentTerm: number;
+    autoIssue: boolean;
+    includeSeal: boolean;
+  };
+  alerts: {
+    drawingReviewHours: number;
+    deliveryNoticeDays: number;
+    urgentCsImmediate: boolean;
+    approvalReminder: boolean;
+    statementReminder: boolean;
+  };
+};
+type AppUser = {
+  email: string;
+  name: string;
+  role: string;
+  active: boolean;
+  updatedAt?: string;
+};
+type AuditLog = {
+  id: number;
+  section: string;
+  action: string;
+  summary: string;
+  actor: string;
+  createdAt: string;
+};
+
+const defaultSettings: SettingsState = {
+  drawingNumber: {
+    format: "DWG-{YYMM}-{SEQ}",
+    prefix: "DWG",
+    sequenceDigits: 3,
+    resetCycle: "monthly",
+    allowManualOverride: false,
+  },
+  pricingApproval: {
+    changeThreshold: 10,
+    amountThreshold: 5000000,
+    minimumMargin: 18,
+    validityDays: 90,
+    requireReason: true,
+  },
+  statement: {
+    supplierName: "도금산업 주식회사",
+    businessNumber: "000-00-00000",
+    closingDay: "month-end",
+    paymentTerm: 30,
+    autoIssue: false,
+    includeSeal: true,
+  },
+  alerts: {
+    drawingReviewHours: 8,
+    deliveryNoticeDays: 2,
+    urgentCsImmediate: true,
+    approvalReminder: true,
+    statementReminder: true,
+  },
+};
+
 function won(value: number) {
   return `${new Intl.NumberFormat("ko-KR").format(value)}원`;
 }
@@ -389,7 +470,7 @@ export default function DashboardApp() {
               {page === "sales" && <Sales />}
               {page === "cs" && <CS items={tickets} onComplete={(id) => { setTickets((items) => items.map((item) => item.id === id ? { ...item, status: "처리 완료" } : item)); announce("CS 항목을 처리 완료했습니다."); }} />}
               {page === "customers" && <Customers />}
-              {page === "settings" && <Settings />}
+              {page === "settings" && <Settings onAnnounce={announce} />}
             </>
           )}
         </div>
@@ -692,9 +773,288 @@ function Customers() {
   return <section className="panel"><div className="list-tools"><div className="tabs"><button className="active">전체 고객사</button><button>거래 중</button><button>휴면</button></div><button className="primary compact">＋ 고객사 등록</button></div><table><thead><tr><th>고객사</th><th>담당자</th><th>거래 조건</th><th>등록 도면</th><th className="number">누적 매출</th></tr></thead><tbody>{customers.map((item) => <tr key={item[0]}><td><div className="company"><span>{item[0].slice(0, 1)}</span><strong>{item[0]}</strong></div></td><td>{item[1]}</td><td>{item[2]}</td><td>{item[3]}건</td><td className="number">{won(item[4])}</td></tr>)}</tbody></table></section>;
 }
 
-function Settings() {
-  const items = [["▱", "도면번호 규칙", "연도, 고객사와 일련번호 조합을 설정합니다.", "DWG-{YYMM}-{SEQ}"], ["₩", "단가 승인", "변경폭과 금액에 따른 승인 단계를 관리합니다.", "10% 이상 관리자 승인"], ["▤", "거래명세서", "발급 양식과 월마감일을 설정합니다.", "매월 말일 마감"], ["♙", "사용자·권한", "관리자, 영업, 생산과 회계 권한을 구분합니다.", "등록 사용자 8명"], ["◎", "알림 규칙", "검토 지연, 납품과 CS 알림 기준을 설정합니다.", "긴급 CS 즉시 알림"], ["↺", "변경 이력", "도면, 단가와 명세서 감사로그를 확인합니다.", "최근 1년 보관"]];
-  return <div className="settings">{items.map((item) => <button key={item[1]}><span>{item[0]}</span><div><h2>{item[1]}</h2><p>{item[2]}</p><small>{item[3]}</small></div><b>›</b></button>)}</div>;
+function Settings({ onAnnounce }: { onAnnounce: (message: string) => void }) {
+  const sections: Array<{
+    id: SettingsSection;
+    icon: string;
+    title: string;
+    description: string;
+  }> = [
+    { id: "drawingNumber", icon: "▱", title: "도면번호 규칙", description: "신규 도면번호 생성 기준" },
+    { id: "pricingApproval", icon: "₩", title: "단가 승인", description: "변경폭·금액별 승인 기준" },
+    { id: "statement", icon: "▤", title: "거래명세서", description: "공급자 정보와 월마감" },
+    { id: "alerts", icon: "◎", title: "알림 규칙", description: "검토·납기·CS 알림" },
+    { id: "users", icon: "♙", title: "사용자·권한", description: "역할별 접근 권한" },
+    { id: "audit", icon: "↺", title: "변경 이력", description: "설정 감사 로그" },
+  ];
+  const [active, setActive] = useState<SettingsSection>("drawingNumber");
+  const [settings, setSettings] = useState<SettingsState>(defaultSettings);
+  const [users, setUsers] = useState<AppUser[]>([]);
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState("");
+  const [newUser, setNewUser] = useState({ name: "", email: "", role: "조회" });
+
+  async function loadSettings() {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch("/api/settings", { cache: "no-store" });
+      const body = await response.json() as {
+        settings?: Partial<SettingsState>;
+        users?: AppUser[];
+        logs?: AuditLog[];
+        error?: string;
+      };
+      if (!response.ok) throw new Error(body.error ?? "설정을 불러오지 못했습니다.");
+      setSettings({
+        drawingNumber: { ...defaultSettings.drawingNumber, ...body.settings?.drawingNumber },
+        pricingApproval: { ...defaultSettings.pricingApproval, ...body.settings?.pricingApproval },
+        statement: { ...defaultSettings.statement, ...body.settings?.statement },
+        alerts: { ...defaultSettings.alerts, ...body.settings?.alerts },
+      });
+      setUsers(body.users ?? []);
+      setLogs(body.logs ?? []);
+      setDirty(false);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "설정을 불러오지 못했습니다.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadSettings();
+  }, []);
+
+  function updateSetting(section: ConfigSection, field: string, value: string | number | boolean) {
+    setSettings((current) => ({
+      ...current,
+      [section]: { ...current[section], [field]: value },
+    }));
+    setDirty(true);
+  }
+
+  function updateUser(email: string, patch: Partial<AppUser>) {
+    setUsers((current) => current.map((user) => user.email === email ? { ...user, ...patch } : user));
+    setDirty(true);
+  }
+
+  function addUser() {
+    const name = newUser.name.trim();
+    const email = newUser.email.trim().toLowerCase();
+    if (!name || !email.includes("@")) {
+      onAnnounce("사용자 이름과 이메일을 확인해주세요.");
+      return;
+    }
+    if (users.some((user) => user.email === email)) {
+      onAnnounce("이미 등록된 이메일입니다.");
+      return;
+    }
+    setUsers((current) => [...current, { name, email, role: newUser.role, active: true }]);
+    setNewUser({ name: "", email: "", role: "조회" });
+    setDirty(true);
+  }
+
+  async function saveActive() {
+    if (active === "audit") return;
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          section: active,
+          values: active === "users" ? { users } : settings[active],
+        }),
+      });
+      const body = await response.json() as {
+        settings?: Partial<SettingsState>;
+        users?: AppUser[];
+        logs?: AuditLog[];
+        error?: string;
+      };
+      if (!response.ok) throw new Error(body.error ?? "설정을 저장하지 못했습니다.");
+      setSettings({
+        drawingNumber: { ...defaultSettings.drawingNumber, ...body.settings?.drawingNumber },
+        pricingApproval: { ...defaultSettings.pricingApproval, ...body.settings?.pricingApproval },
+        statement: { ...defaultSettings.statement, ...body.settings?.statement },
+        alerts: { ...defaultSettings.alerts, ...body.settings?.alerts },
+      });
+      setUsers(body.users ?? users);
+      setLogs(body.logs ?? logs);
+      setDirty(false);
+      onAnnounce("설정이 저장되고 변경 이력에 기록되었습니다.");
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "설정을 저장하지 못했습니다.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const activeInfo = sections.find((section) => section.id === active) ?? sections[0];
+
+  return (
+    <div className="settings-layout">
+      <aside className="settings-nav">
+        <header><small>CONFIGURATION</small><strong>운영 설정</strong></header>
+        <nav aria-label="시스템 설정 항목">
+          {sections.map((section) => (
+            <button
+              type="button"
+              className={active === section.id ? "active" : ""}
+              key={section.id}
+              onClick={() => { setActive(section.id); setError(""); }}
+            >
+              <span>{section.icon}</span>
+              <div><strong>{section.title}</strong><small>{section.description}</small></div>
+              <b>›</b>
+            </button>
+          ))}
+        </nav>
+        <footer><span className={error ? "error" : dirty ? "dirty" : "saved"} /><small>{error ? "확인 필요" : dirty ? "저장하지 않은 변경사항" : "모든 설정 저장됨"}</small></footer>
+      </aside>
+
+      <section className="settings-detail panel">
+        <header className="settings-detail-head">
+          <div><span>{activeInfo.icon}</span><div><small>SYSTEM SETTING</small><h2>{activeInfo.title}</h2><p>{activeInfo.description}</p></div></div>
+          {active === "audit" ? (
+            <button className="secondary compact" type="button" onClick={() => void loadSettings()}>↻ 새로고침</button>
+          ) : (
+            <button className="primary compact" type="button" disabled={saving || loading || !dirty} onClick={() => void saveActive()}>
+              {saving ? "저장 중…" : "변경사항 저장"}
+            </button>
+          )}
+        </header>
+
+        {loading ? (
+          <div className="settings-loading"><span /><p>운영 설정을 불러오는 중입니다.</p></div>
+        ) : error ? (
+          <div className="settings-error"><strong>설정을 처리할 수 없습니다.</strong><p>{error}</p><button className="secondary compact" onClick={() => void loadSettings()}>다시 시도</button></div>
+        ) : (
+          <div className="settings-body">
+            {active === "drawingNumber" && (
+              <>
+                <SettingGroup title="번호 구성" description="신규 도면을 등록할 때 자동으로 부여되는 번호입니다.">
+                  <div className="settings-form two">
+                    <Property label="도면번호 형식"><input value={settings.drawingNumber.format} onChange={(event) => updateSetting("drawingNumber", "format", event.target.value)} /></Property>
+                    <Property label="고정 접두사"><input value={settings.drawingNumber.prefix} onChange={(event) => updateSetting("drawingNumber", "prefix", event.target.value.toUpperCase())} /></Property>
+                    <Property label="일련번호 자릿수"><select value={settings.drawingNumber.sequenceDigits} onChange={(event) => updateSetting("drawingNumber", "sequenceDigits", Number(event.target.value))}><option value={3}>3자리</option><option value={4}>4자리</option><option value={5}>5자리</option></select></Property>
+                    <Property label="번호 초기화 주기"><select value={settings.drawingNumber.resetCycle} onChange={(event) => updateSetting("drawingNumber", "resetCycle", event.target.value)}><option value="monthly">매월</option><option value="yearly">매년</option><option value="never">초기화 안 함</option></select></Property>
+                  </div>
+                </SettingGroup>
+                <SettingGroup title="생성 예시" description="현재 규칙을 적용한 다음 도면번호입니다.">
+                  <div className="number-preview"><small>NEXT DRAWING ID</small><strong>{settings.drawingNumber.prefix}-2607-{String(42).padStart(settings.drawingNumber.sequenceDigits, "0")}</strong><span>2026년 7월 · 42번째 등록</span></div>
+                  <Toggle checked={settings.drawingNumber.allowManualOverride} onChange={(checked) => updateSetting("drawingNumber", "allowManualOverride", checked)} label="관리자의 도면번호 수동 변경 허용" description="중복 번호는 저장 단계에서 차단합니다." />
+                </SettingGroup>
+              </>
+            )}
+
+            {active === "pricingApproval" && (
+              <>
+                <SettingGroup title="승인 기준" description="아래 조건 중 하나라도 충족하면 관리자 승인이 필요합니다.">
+                  <div className="settings-form two">
+                    <Property label="단가 변경폭"><div className="input-unit"><input type="number" min={0} value={settings.pricingApproval.changeThreshold} onChange={(event) => updateSetting("pricingApproval", "changeThreshold", Number(event.target.value))} /><span>% 이상</span></div></Property>
+                    <Property label="견적 총액"><div className="input-unit"><input type="number" min={0} step={100000} value={settings.pricingApproval.amountThreshold} onChange={(event) => updateSetting("pricingApproval", "amountThreshold", Number(event.target.value))} /><span>원 이상</span></div></Property>
+                    <Property label="최소 목표 마진"><div className="input-unit"><input type="number" min={0} value={settings.pricingApproval.minimumMargin} onChange={(event) => updateSetting("pricingApproval", "minimumMargin", Number(event.target.value))} /><span>%</span></div></Property>
+                    <Property label="승인 단가 유효기간"><div className="input-unit"><input type="number" min={1} value={settings.pricingApproval.validityDays} onChange={(event) => updateSetting("pricingApproval", "validityDays", Number(event.target.value))} /><span>일</span></div></Property>
+                  </div>
+                </SettingGroup>
+                <SettingGroup title="승인 정책" description="단가 변경의 사유와 책임자를 명확하게 남깁니다.">
+                  <Toggle checked={settings.pricingApproval.requireReason} onChange={(checked) => updateSetting("pricingApproval", "requireReason", checked)} label="단가 변경 사유 필수 입력" description="형상, 도금 난이도, 면적 등 산정 근거를 기록합니다." />
+                  <div className="rule-preview"><span>승인 흐름</span><strong>담당자 산정</strong><b>→</b><strong>관리자 검토</strong><b>→</b><strong>단가 확정</strong></div>
+                </SettingGroup>
+              </>
+            )}
+
+            {active === "statement" && (
+              <>
+                <SettingGroup title="공급자 정보" description="거래명세서 상단에 표시되는 사업자 정보입니다.">
+                  <div className="settings-form two">
+                    <Property label="상호"><input value={settings.statement.supplierName} onChange={(event) => updateSetting("statement", "supplierName", event.target.value)} /></Property>
+                    <Property label="사업자등록번호"><input value={settings.statement.businessNumber} onChange={(event) => updateSetting("statement", "businessNumber", event.target.value)} /></Property>
+                    <Property label="월마감 기준"><select value={settings.statement.closingDay} onChange={(event) => updateSetting("statement", "closingDay", event.target.value)}><option value="month-end">매월 말일</option><option value="25">매월 25일</option><option value="20">매월 20일</option><option value="twice">월 2회</option></select></Property>
+                    <Property label="기본 결제기한"><div className="input-unit"><input type="number" min={0} value={settings.statement.paymentTerm} onChange={(event) => updateSetting("statement", "paymentTerm", Number(event.target.value))} /><span>일</span></div></Property>
+                  </div>
+                </SettingGroup>
+                <SettingGroup title="발급 정책" description="확정 납품 데이터를 기준으로 명세서를 생성합니다.">
+                  <Toggle checked={settings.statement.autoIssue} onChange={(checked) => updateSetting("statement", "autoIssue", checked)} label="마감일에 거래명세서 자동 발급" description="발급 전 공급가액과 수량 오류를 자동 검사합니다." />
+                  <Toggle checked={settings.statement.includeSeal} onChange={(checked) => updateSetting("statement", "includeSeal", checked)} label="공급자 직인 이미지 포함" description="PDF 출력본과 이메일 첨부본에 동일하게 적용합니다." />
+                </SettingGroup>
+              </>
+            )}
+
+            {active === "alerts" && (
+              <>
+                <SettingGroup title="업무 지연 알림" description="담당자가 놓치기 쉬운 기준 시점을 설정합니다.">
+                  <div className="settings-form two">
+                    <Property label="도면 검토 지연"><div className="input-unit"><input type="number" min={1} value={settings.alerts.drawingReviewHours} onChange={(event) => updateSetting("alerts", "drawingReviewHours", Number(event.target.value))} /><span>시간 후</span></div></Property>
+                    <Property label="납품 예정 알림"><div className="input-unit"><input type="number" min={0} value={settings.alerts.deliveryNoticeDays} onChange={(event) => updateSetting("alerts", "deliveryNoticeDays", Number(event.target.value))} /><span>일 전</span></div></Property>
+                  </div>
+                </SettingGroup>
+                <SettingGroup title="알림 유형" description="활성화한 항목은 업무 대시보드와 담당자 알림에 표시됩니다.">
+                  <Toggle checked={settings.alerts.urgentCsImmediate} onChange={(checked) => updateSetting("alerts", "urgentCsImmediate", checked)} label="긴급 CS 즉시 알림" description="품질 클레임과 납기 이슈를 우선 노출합니다." />
+                  <Toggle checked={settings.alerts.approvalReminder} onChange={(checked) => updateSetting("alerts", "approvalReminder", checked)} label="단가 승인 지연 알림" description="승인 요청 후 4시간이 지나면 재알림합니다." />
+                  <Toggle checked={settings.alerts.statementReminder} onChange={(checked) => updateSetting("alerts", "statementReminder", checked)} label="거래명세서 미발급 알림" description="납품 확정 후 미발급 건을 매일 집계합니다." />
+                </SettingGroup>
+              </>
+            )}
+
+            {active === "users" && (
+              <>
+                <SettingGroup title="등록 사용자" description="역할에 따라 조회·등록·승인 범위가 달라집니다.">
+                  <div className="user-permission-table">
+                    <div className="permission-head"><span>사용자</span><span>역할</span><span>상태</span><span /></div>
+                    {users.map((user) => (
+                      <div className="permission-row" key={user.email}>
+                        <div><strong>{user.name}</strong><small>{user.email}</small></div>
+                        <select value={user.role} onChange={(event) => updateUser(user.email, { role: event.target.value })}><option>관리자</option><option>영업</option><option>생산</option><option>회계</option><option>조회</option></select>
+                        <button type="button" className={user.active ? "user-state active" : "user-state"} onClick={() => updateUser(user.email, { active: !user.active })}>{user.active ? "사용 중" : "중지"}</button>
+                        <button type="button" className="remove-user" aria-label={`${user.name} 삭제`} onClick={() => { setUsers((current) => current.filter((item) => item.email !== user.email)); setDirty(true); }}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                </SettingGroup>
+                <SettingGroup title="사용자 추가" description="이메일 기준으로 사용자를 등록하고 초기 역할을 지정합니다.">
+                  <div className="add-user">
+                    <input placeholder="이름" value={newUser.name} onChange={(event) => setNewUser((current) => ({ ...current, name: event.target.value }))} />
+                    <input type="email" placeholder="name@company.com" value={newUser.email} onChange={(event) => setNewUser((current) => ({ ...current, email: event.target.value }))} />
+                    <select value={newUser.role} onChange={(event) => setNewUser((current) => ({ ...current, role: event.target.value }))}><option>관리자</option><option>영업</option><option>생산</option><option>회계</option><option>조회</option></select>
+                    <button type="button" className="secondary compact" onClick={addUser}>＋ 추가</button>
+                  </div>
+                </SettingGroup>
+              </>
+            )}
+
+            {active === "audit" && (
+              <SettingGroup title="최근 변경 이력" description="설정 저장 시 사용자와 변경 시각이 자동 기록됩니다.">
+                <div className="audit-list">
+                  {logs.length ? logs.map((log) => (
+                    <article key={log.id}>
+                      <span>{log.section.slice(0, 1).toUpperCase()}</span>
+                      <div><strong>{log.action}</strong><p>{log.summary}</p><small>{log.actor}</small></div>
+                      <time>{new Intl.DateTimeFormat("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(log.createdAt))}</time>
+                    </article>
+                  )) : <div className="audit-empty"><span>↺</span><strong>아직 변경 이력이 없습니다.</strong><p>첫 설정을 저장하면 이곳에 기록됩니다.</p></div>}
+                </div>
+              </SettingGroup>
+            )}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function SettingGroup({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
+  return <section className="setting-group"><header><h3>{title}</h3><p>{description}</p></header><div>{children}</div></section>;
+}
+
+function Toggle({ checked, onChange, label, description }: { checked: boolean; onChange: (checked: boolean) => void; label: string; description: string }) {
+  return <label className="toggle-row"><div><strong>{label}</strong><small>{description}</small></div><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><span aria-hidden="true" /></label>;
 }
 
 function SectionHead({ title, description, action }: { title: string; description: string; action?: React.ReactNode }) {

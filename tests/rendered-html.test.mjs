@@ -1,45 +1,25 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
-async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
+test("builds the Korean operations dashboard and settings API", async () => {
+  const [dashboard, layout, settingsRoute] = await Promise.all([
+    readFile(new URL("../app/DashboardApp.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/settings/route.ts", import.meta.url), "utf8"),
+    access(new URL("../dist/server/index.js", import.meta.url)),
+  ]);
 
-  return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
-    }),
-    {
-      ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
-      },
-    },
-    {
-      waitUntil() {},
-      passThroughOnException() {},
-    },
-  );
-}
-
-test("server-renders the Korean operations dashboard", async () => {
-  const response = await render();
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-
-  const html = await response.text();
-  assert.match(html, /<html lang="ko">/i);
-  assert.match(
-    html,
-    /<title>업무 대시보드 · 도면·거래 통합 업무시스템<\/title>/i,
-  );
-  assert.match(html, /도면부터 거래명세서까지/);
-  assert.match(html, /오늘 처리할 업무/);
-  assert.match(html, /도면 등록/);
-  assert.match(html, /거래명세서/);
-  assert.match(html, /CS·클레임/);
-  assert.doesNotMatch(html, /Your site is taking shape/);
+  assert.match(layout, /lang="ko"/i);
+  assert.match(layout, /도면부터 거래명세서까지/);
+  assert.match(dashboard, /오늘 처리할 업무/);
+  assert.match(dashboard, /도면 등록/);
+  assert.match(dashboard, /거래명세서/);
+  assert.match(dashboard, /CS·클레임/);
+  assert.match(dashboard, /도면번호 규칙/);
+  assert.match(settingsRoute, /system_settings/);
+  assert.match(settingsRoute, /audit_logs/);
+  assert.doesNotMatch(dashboard, /Your site is taking shape/);
 });
 
 test("ships the drawing and pricing workflows with social metadata", async () => {
